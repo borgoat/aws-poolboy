@@ -3,6 +3,7 @@ package refill
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	retry "github.com/avast/retry-go"
@@ -46,35 +47,53 @@ func New(organizationsClient organizationsiface.OrganizationsAPI, opts *Refiller
 
 func (r *generic) Create(count int) {
 
-	go func() {
-		names := generateAccountNames(r.config.AccountPrefix, r.config.AccountRootUsername, r.config.AccountRootDomain)
+	if count < 1 {
+		count = 1
+	}
 
-		createAccount, _ := r.org.CreateAccount(&organizations.CreateAccountInput{
-			AccountName:            &names.name,
-			Email:                  &names.email,
-			IamUserAccessToBilling: aws.String("ALLOWED"),
-			RoleName:               &r.config.AccountRoleName,
-		})
+	var waitGroup sync.WaitGroup
 
-		retry.Do(
-			func() error {
-				status, err := r.org.DescribeCreateAccountStatus(&organizations.DescribeCreateAccountStatusInput{
-					CreateAccountRequestId: createAccount.CreateAccountStatus.Id,
-				})
-				if err != nil {
-					return err
-				}
+	waitGroup.Add(count)
 
-				if status.CreateAccountStatus.CompletedTimestamp == nil {
-					return errors.New("creation not complete")
-				}
+	for i := 0; i < count; i++ {
+		go func() {
+			defer waitGroup.Done()
+			r.createOneAccount()
+		}()
+	}
 
-				return nil
-			},
-			retry.Attempts(50),
-			retry.Delay(10*time.Second),
-		)
-	}()
+	waitGroup.Wait()
+
+}
+
+func (r *generic) createOneAccount() {
+	names := generateAccountNames(r.config.AccountPrefix, r.config.AccountRootUsername, r.config.AccountRootDomain)
+
+	createAccount, _ := r.org.CreateAccount(&organizations.CreateAccountInput{
+		AccountName:            &names.name,
+		Email:                  &names.email,
+		IamUserAccessToBilling: aws.String("ALLOWED"),
+		RoleName:               &r.config.AccountRoleName,
+	})
+
+	retry.Do(
+		func() error {
+			status, err := r.org.DescribeCreateAccountStatus(&organizations.DescribeCreateAccountStatusInput{
+				CreateAccountRequestId: createAccount.CreateAccountStatus.Id,
+			})
+			if err != nil {
+				return err
+			}
+
+			if status.CreateAccountStatus.CompletedTimestamp == nil {
+				return errors.New("creation not complete")
+			}
+
+			return nil
+		},
+		retry.Attempts(50),
+		retry.Delay(10*time.Second),
+	)
 }
 
 type accountNames struct {
